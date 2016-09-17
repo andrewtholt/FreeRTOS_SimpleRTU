@@ -61,14 +61,25 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN 0 */
 #define STACK_SIZE 128
 #define USART_BUFFER 32
-
+// 
+// Commands
+//
 #define READ_CMD  0x10
 #define WRITE_CMD 0x20
+#define SUB   0x30
+
 #define MASK_CMD  0xf0
 
+// Sub-command, or functions
+//
 #define DIGITAL_CMD  0x01
 #define ANALOG_CMD   0x02
 #define SETTINGS_CMD 0x04
+
+#define SUB_CMD 0x01
+#define UNSUB_CMD 0x02
+
+
 #define MASK_FUNC    0x0f
 
 enum appTaskQs {
@@ -181,6 +192,8 @@ osStatus safeSerialReceive( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t 
 	return rc;
 }
 
+#define MAX_SUB 4  // Maximum number of subscribers;
+
 void relayThread(void const *args) {
 	osEvent evt;
 	HAL_StatusTypeDef status;
@@ -188,8 +201,13 @@ void relayThread(void const *args) {
 	bool valid=false;
 	bool readData  = false;
 	bool writeData = false;
+	bool subscribeCmd = false;
 
+	uint8_t subList[MAX_SUB];
 	uint32_t xfer;
+	uint8_t idx=0;
+
+	memset(&subList,0,sizeof(subList));
 
 	while(1) {
 		evt = osMessageGet(taskQs[RLY_TASK], osWaitForever);
@@ -200,7 +218,11 @@ void relayThread(void const *args) {
 
 		readData  = (((data.cmd & MASK_CMD) == READ_CMD)  && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
 		writeData = (((data.cmd & MASK_CMD) == WRITE_CMD) && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
-		valid = (readData || writeData)?true:false;
+
+		subscribeCmd =  (((data.cmd & MASK_CMD) == SUB) && (( data.cmd & MASK_FUNC ) == SUB_CMD))?true:false ;
+		subscribeCmd |= (((data.cmd & MASK_CMD) == SUB) && (( data.cmd & MASK_FUNC ) == UNSUB_CMD))?true:false ;
+
+		valid = (readData || writeData || subscribeCmd )?true:false;
 
 		if (valid ) {
 			data.cmd &=0x0f;
@@ -209,6 +231,7 @@ void relayThread(void const *args) {
 			if (writeData) {
 				switchRelay(data.addr,data.data );
 			}
+
 			if(readData) {
 				if(readRelay(data.addr) ) {
 					data.data = 0x01;
@@ -217,10 +240,35 @@ void relayThread(void const *args) {
 				}
 			}
 
+			if( subscribeCmd ) {
+				//
+				// If I get to here you have eithe asked to subscribe, or unsubscribe
+				//
+				bool subFlag = false;
 
-			memcpy(&xfer, &data, sizeof(uint32_t));
+				if( (data.cmd & MASK_FUNC) == SUB_CMD ) {
+					if( idx < MAX_SUB) {
+						subList[idx++]=data.data & 0x0ff;
+					}
+					// TODO No unsub
+				}
+			}
 
-			status=osMessagePut(taskQs[SER_S_TASK], (uint32_t )xfer, osWaitForever);
+
+			if( readData || writeData) {
+				// TODO Loop over sub list
+				memcpy(&xfer, &data, sizeof(uint32_t));
+
+				for(int i=0;i<MAX_SUB;i++) {
+
+//					status=osMessagePut(taskQs[SER_S_TASK], (uint32_t )xfer, osWaitForever);
+
+					if( subList[i] != 0) {
+						status=osMessagePut(taskQs[subList[i]], (uint32_t )xfer, osWaitForever);
+					}
+				}
+			}
+
 		}
 
 		osThreadYield();
@@ -233,9 +281,20 @@ void serialSenderThread(void const *args) {
 	HAL_StatusTypeDef status;
 	struct cmdMessage data;
 	bool cmdValid = false ;
-
+	uint32_t xfer;
 
 	status =HAL_UART_Transmit(&huart2, (uint8_t*)"ST", 2, 0xFFFF);
+	memset(&data,0,sizeof(struct cmdMessage));
+
+	data.cmd = SUB | SUB_CMD;
+	data.addr = 0x00;
+	data.data = SER_S_TASK;
+
+	memcpy(&xfer, &data, sizeof(uint32_t));
+	status=osMessagePut(taskQs[RLY_TASK], (uint32_t )xfer, osWaitForever);
+
+
+	memset(&data,0,sizeof(struct cmdMessage));
 	while(1) {
 		evt = osMessageGet(taskQs[SER_S_TASK], osWaitForever);
 		//
@@ -300,7 +359,8 @@ void serialListenerThread(void const *args) {
 			valid = true;
 		} else if ( rxBuffer[2] == 'A') {
 			cmd.cmd |= ANALOG_CMD;
-			valid = true;
+			// TODO Add anolog reading, some day
+			valid = false;
 		}
 		//
 		// If valid is false this is not a good command, so
@@ -321,9 +381,9 @@ void serialListenerThread(void const *args) {
 }
 
 
-osThreadDef(SER_L, serialListenerThread, osPriorityNormal,0, STACK_SIZE);
-osThreadDef(SER_S, serialSenderThread, osPriorityNormal+1,0, STACK_SIZE);
 osThreadDef(RLY,   relayThread, osPriorityNormal+1,0, STACK_SIZE);
+osThreadDef(SER_L, serialListenerThread, osPriorityNormal,0, STACK_SIZE);
+osThreadDef(SER_S, serialSenderThread, osPriorityNormal,0, STACK_SIZE);
 
 /* USER CODE END 0 */
 
@@ -346,6 +406,7 @@ int main(void)
   MX_GPIO_Init();
   allRelaysOff();
   MX_USART2_UART_Init();
+  // HAL_UART_Transmit(&huart2, (uint8_t*)"ST", 2, 0xFFFF);
 
   /* USER CODE BEGIN 2 */
   uart2LockId = osMutexCreate(osMutex(uart2Lock));

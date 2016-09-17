@@ -158,8 +158,8 @@ void allRelaysOff() {
 // In this version there are 4 outputs, 0-3
 
 osStatus safeSerialSend( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t len) {
-	volatile osStatus rc;
-	volatile HAL_StatusTypeDef ustatus;
+	osStatus rc;
+	HAL_StatusTypeDef ustatus;
 	int i;
 
 	rc = osMutexWait(uart2LockId, osWaitForever);
@@ -172,8 +172,8 @@ osStatus safeSerialSend( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t len
 }
 
 osStatus safeSerialReceive( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t len) {
-	volatile osStatus rc;
-	volatile HAL_StatusTypeDef ustatus;
+	osStatus rc;
+	HAL_StatusTypeDef ustatus;
 
 	rc = osMutexWait(uart2LockId, osWaitForever);
 	ustatus =  HAL_UART_Receive(uart, buffer, (uint16_t )len, 0xffff);
@@ -202,14 +202,6 @@ void relayThread(void const *args) {
 		writeData = (((data.cmd & MASK_CMD) == WRITE_CMD) && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
 		valid = (readData || writeData)?true:false;
 
-		/*
-		if( (data.cmd & MASK_CMD ) == WRITE_CMD ) {
-			printf("Write\n");
-			valid = true;
-		} else {
-			valid = false;
-		}
-		*/
 		if (valid ) {
 			data.cmd &=0x0f;
 			data.cmd |= WRITE_CMD ;
@@ -236,10 +228,10 @@ void relayThread(void const *args) {
 }
 
 void serialSenderThread(void const *args) {
-	volatile osEvent evt;
-	volatile uint8_t txBuffer[8];
-	volatile HAL_StatusTypeDef status;
-	volatile struct cmdMessage data;
+	osEvent evt;
+	uint8_t txBuffer[8];
+	HAL_StatusTypeDef status;
+	struct cmdMessage data;
 	bool cmdValid = false ;
 
 
@@ -280,7 +272,7 @@ void serialSenderThread(void const *args) {
 
 void serialListenerThread(void const *args) {
 	uint8_t rxBuffer[8];
-	volatile osStatus status;
+	osStatus status;
 
 	struct cmdMessage cmd;
 	uint32_t data;

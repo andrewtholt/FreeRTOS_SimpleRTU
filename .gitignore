@@ -1,2 +1,12 @@
 .mxproject
-SW4STM32
+SW4STM32/Debug
+*.o
+*.d
+*.mk
+*.list
+*.map
+*.bin
+*.elf
+*.swp
+cscope.out
+

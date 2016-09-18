@@ -406,9 +406,13 @@ int main(void)
   MX_GPIO_Init();
   allRelaysOff();
   MX_USART2_UART_Init();
-  // HAL_UART_Transmit(&huart2, (uint8_t*)"ST", 2, 0xFFFF);
+
 
   /* USER CODE BEGIN 2 */
+  // TODO Test this
+  // bool tst = rxReady( &huart2 ) ;
+
+
   uart2LockId = osMutexCreate(osMutex(uart2Lock));
 
   memset(taskQs,0xff,sizeof(taskQs));

@@ -91,11 +91,8 @@ enum appTaskQs {
 	LAST_TASK
 };
 
-osMutexDef(fred);
-osMutexId fred_id;
-
 struct taskData {
-	SemaphoreHandle_t lock;
+	osMutexId lock;
 	QueueHandle_t q;
 
 	uint8_t dest;
@@ -196,6 +193,8 @@ osStatus safeSerialReceive( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t 
 
 void relayThread(void const *args) {
 	osEvent evt;
+	osStatus rc;
+
 	HAL_StatusTypeDef status;
 	struct cmdMessage data;
 	bool valid=false;
@@ -207,9 +206,30 @@ void relayThread(void const *args) {
 	uint32_t xfer;
 	uint8_t idx=0;
 
+	struct taskData *myData;
+
+	myData = malloc(sizeof(struct taskData ));
+
+	memset(myData,0,sizeof(struct taskData));
+
+	osMutexDef(relayLock);
+	osMutexId relayLock_id;
+	myData->lock = osMutexCreate(osMutex(uart2Lock));
+
+	myData->defaultDest = SER_S_TASK ;
+
+	/*
+	rc = osMutexWait(myData->lock, osWaitForever);
+	rc = osMutexRelease(myData->lock);
+	*/
+
+	task[ RLY_TASK] = myData ;
+
 	memset(&subList,0,sizeof(subList));
 
 	while(1) {
+		// TODO chnage this to use the more complete taskData struct
+		//
 		evt = osMessageGet(taskQs[RLY_TASK], osWaitForever);
 		memcpy(&data,&evt.value.v,sizeof(uint32_t));
         // 
@@ -387,8 +407,7 @@ osThreadDef(SER_S, serialSenderThread, osPriorityNormal,0, STACK_SIZE);
 
 /* USER CODE END 0 */
 
-int main(void)
-{
+int main(void) {
 
   /* USER CODE BEGIN 1 */
 

@@ -39,6 +39,8 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include "ATH_serial.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
@@ -59,7 +61,7 @@ void MX_FREERTOS_Init(void);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
-#define STACK_SIZE 128
+#define STACK_SIZE 256
 #define USART_BUFFER 32
 // 
 // Commands
@@ -99,26 +101,48 @@ struct taskData {
 	uint8_t defaultDest;
 };
 
+struct taskData *task[LAST_TASK];
+
+QueueHandle_t getQ(uint8_t idx) {
+	QueueHandle_t q;
+	struct taskData *d;
+
+	d=task[idx];
+
+	if( d != NULL ) {
+		osMutexWait(d->lock, osWaitForever);
+		q = d->q;
+		osMutexRelease(d->lock);
+	} else {
+		q = NULL;
+	}
+
+	return q;
+}
+
 struct cmdMessage {
 	uint8_t cmd;
 	uint8_t addr;
 	uint16_t data;
 };
 
-osMessageQId taskQs[LAST_TASK];
+// osMessageQId taskQs[LAST_TASK];
 
-struct taskData *task[LAST_TASK];
 
 // TODO Move this into main
-osMessageQDef(relayQ, 4, uint32_t ); // Declare a Message queue
-osMessageQDef(senderQ, 4, uint32_t ); // Declare a Message queue
+#define QDEPTH 8
+osMessageQDef(relayQ, QDEPTH, uint32_t ); // Declare a Message queue
+osMessageQDef(senderQ, QDEPTH, uint32_t ); // Declare a Message queue
 
 osThreadId relayThreadHandle;
 osThreadId serialListenerThreadHandle;
 osThreadId serialSenderThreadHandle;
 
-osMutexDef(uart2Lock);
-osMutexId uart2LockId;
+osMutexDef(uart2txLock);
+osMutexId uart2txLockId;
+
+osMutexDef(uart2rxLock);
+osMutexId uart2rxLockId;
 
 // Ignore attempt to address beyond that.
 //
@@ -167,14 +191,14 @@ void allRelaysOff() {
 
 osStatus safeSerialSend( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t len) {
 	osStatus rc;
-	HAL_StatusTypeDef ustatus;
+	volatile HAL_StatusTypeDef ustatus;
 	int i;
 
-	rc = osMutexWait(uart2LockId, osWaitForever);
+	rc = osMutexWait(uart2txLockId, osWaitForever);
 	for(i=0;i<len;i++) {
-		ustatus = HAL_UART_Transmit(uart, &buffer[i], 1, 0xFFFF);
+		txByteWait(uart,buffer[i],-1);
 	}
-	rc = osMutexRelease(uart2LockId);
+	rc = osMutexRelease(uart2txLockId);
 
 	return rc;
 }
@@ -183,9 +207,12 @@ osStatus safeSerialReceive( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t 
 	osStatus rc;
 	HAL_StatusTypeDef ustatus;
 
-	rc = osMutexWait(uart2LockId, osWaitForever);
-	ustatus =  HAL_UART_Receive(uart, buffer, (uint16_t )len, 0xffff);
-	rc = osMutexRelease(uart2LockId);
+	rc = osMutexWait(uart2rxLockId, osWaitForever);
+
+	for(int i=0;i<len;i++) {
+		buffer[i] = rxByteWait(uart,-1);
+	}
+	rc = osMutexRelease(uart2rxLockId);
 	return rc;
 }
 
@@ -193,7 +220,6 @@ osStatus safeSerialReceive( UART_HandleTypeDef *uart, uint8_t *buffer, uint16_t 
 
 void relayThread(void const *args) {
 	osEvent evt;
-	osStatus rc;
 
 	HAL_StatusTypeDef status;
 	struct cmdMessage data;
@@ -202,6 +228,8 @@ void relayThread(void const *args) {
 	bool writeData = false;
 	bool subscribeCmd = false;
 
+	volatile QueueHandle_t qh;
+
 	uint8_t subList[MAX_SUB];
 	uint32_t xfer;
 	uint8_t idx=0;
@@ -209,32 +237,22 @@ void relayThread(void const *args) {
 	struct taskData *myData;
 
 	myData = malloc(sizeof(struct taskData ));
-
 	memset(myData,0,sizeof(struct taskData));
 
 	osMutexDef(relayLock);
-	osMutexId relayLock_id;
-	myData->lock = osMutexCreate(osMutex(uart2Lock));
 
-	myData->defaultDest = SER_S_TASK ;
-
-	/*
-	rc = osMutexWait(myData->lock, osWaitForever);
-	rc = osMutexRelease(myData->lock);
-	*/
+	myData->lock = osMutexCreate(osMutex(relayLock));
+	myData->q    = osMessageCreate(osMessageQ(relayQ), NULL);
 
 	task[ RLY_TASK] = myData ;
 
 	memset(&subList,0,sizeof(subList));
 
 	while(1) {
-		// TODO chnage this to use the more complete taskData struct
-		//
-		evt = osMessageGet(taskQs[RLY_TASK], osWaitForever);
-		memcpy(&data,&evt.value.v,sizeof(uint32_t));
-        // 
-		// TODO add test for READ_CMD
+		qh = getQ(RLY_TASK);
+		evt = osMessageGet(qh, osWaitForever);
 
+		memcpy(&data,&evt.value.v,sizeof(uint32_t));
 
 		readData  = (((data.cmd & MASK_CMD) == READ_CMD)  && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
 		writeData = (((data.cmd & MASK_CMD) == WRITE_CMD) && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
@@ -262,7 +280,7 @@ void relayThread(void const *args) {
 
 			if( subscribeCmd ) {
 				//
-				// If I get to here you have eithe asked to subscribe, or unsubscribe
+				// If I get to here you have either asked to subscribe, or un-subscribe
 				//
 				bool subFlag = false;
 
@@ -276,15 +294,15 @@ void relayThread(void const *args) {
 
 
 			if( readData || writeData) {
+				volatile QueueHandle_t qh;
+
 				// TODO Loop over sub list
 				memcpy(&xfer, &data, sizeof(uint32_t));
 
 				for(int i=0;i<MAX_SUB;i++) {
-
-//					status=osMessagePut(taskQs[SER_S_TASK], (uint32_t )xfer, osWaitForever);
-
 					if( subList[i] != 0) {
-						status=osMessagePut(taskQs[subList[i]], (uint32_t )xfer, osWaitForever);
+						qh = getQ( subList[i]) ;
+						status=osMessagePut(qh, (uint32_t )xfer, osWaitForever);
 					}
 				}
 			}
@@ -298,12 +316,27 @@ void relayThread(void const *args) {
 void serialSenderThread(void const *args) {
 	osEvent evt;
 	uint8_t txBuffer[8];
-	HAL_StatusTypeDef status;
+	volatile HAL_StatusTypeDef status;
 	struct cmdMessage data;
 	bool cmdValid = false ;
 	uint32_t xfer;
 
-	status =HAL_UART_Transmit(&huart2, (uint8_t*)"ST", 2, 0xFFFF);
+	struct taskData *myData;
+	volatile QueueHandle_t qh;
+
+	myData = malloc(sizeof(struct taskData ));
+	memset(myData,0,sizeof(struct taskData));
+
+	osMutexDef(senderLock);
+
+	myData->lock = osMutexCreate(osMutex(senderLock));
+	myData->q    = osMessageCreate(osMessageQ(senderQ), NULL);
+
+	task[SER_S_TASK] = myData;
+
+	status = safeSerialSend( &huart2, (uint8_t*)"\0ST   ", 6);
+
+	// TODO this needs refactoring into a subscribe/unsubscribe function
 	memset(&data,0,sizeof(struct cmdMessage));
 
 	data.cmd = SUB | SUB_CMD;
@@ -311,14 +344,26 @@ void serialSenderThread(void const *args) {
 	data.data = SER_S_TASK;
 
 	memcpy(&xfer, &data, sizeof(uint32_t));
-	status=osMessagePut(taskQs[RLY_TASK], (uint32_t )xfer, osWaitForever);
+
+	qh = getQ(RLY_TASK);
+	do {
+		qh = getQ(RLY_TASK);
+		if(qh == NULL) {
+			osDelay(10);
+		}
+	} while( qh == NULL);
+
+	status=osMessagePut(qh, (uint32_t )xfer, osWaitForever);
 
 
 	memset(&data,0,sizeof(struct cmdMessage));
 	while(1) {
-		evt = osMessageGet(taskQs[SER_S_TASK], osWaitForever);
+		status = safeSerialSend( &huart2, (uint8_t*)"\0ST   ", 6);
+
+		qh = getQ(SER_S_TASK);
+		evt = osMessageGet(qh, osWaitForever);
 		//
-		// TODO Build command to send from rex message.
+		// TODO Build command to send from rx message.
 		//
 		memcpy(&data,&evt.value.v,sizeof(uint32_t));
 
@@ -356,6 +401,22 @@ void serialListenerThread(void const *args) {
 	struct cmdMessage cmd;
 	uint32_t data;
 	bool valid = false;
+	volatile QueueHandle_t qh;
+	struct taskData *myData;
+
+	myData = malloc(sizeof(struct taskData ));
+	memset(myData,0,sizeof(struct taskData));
+
+	osMutexDef(listenerLock);
+
+	myData->lock = osMutexCreate(osMutex(listenerLock));
+	myData->q = NULL;
+	// TODO use this
+	myData->defaultDest = RLY_TASK ;
+
+	task[SER_L_TASK] = myData;
+
+	printf("Hello\n");
 
 
 	while(1) {
@@ -394,14 +455,15 @@ void serialListenerThread(void const *args) {
 
 			memcpy( &data, (void *)&cmd, sizeof(uint32_t) );
 
-			status=osMessagePut(taskQs[RLY_TASK], (uint32_t)data, osWaitForever);
+			qh = getQ(RLY_TASK);
+			status=osMessagePut(qh, (uint32_t)data, osWaitForever);
 		}
 		osThreadYield();
 	}
 }
 
 
-osThreadDef(RLY,   relayThread, osPriorityNormal+1,0, STACK_SIZE);
+osThreadDef(RLY,   relayThread, osPriorityNormal,0, STACK_SIZE);
 osThreadDef(SER_L, serialListenerThread, osPriorityNormal,0, STACK_SIZE);
 osThreadDef(SER_S, serialSenderThread, osPriorityNormal,0, STACK_SIZE);
 
@@ -426,18 +488,10 @@ int main(void) {
   allRelaysOff();
   MX_USART2_UART_Init();
 
-
   /* USER CODE BEGIN 2 */
-  // TODO Test this
-  // bool tst = rxReady( &huart2 ) ;
 
-
-  uart2LockId = osMutexCreate(osMutex(uart2Lock));
-
-  memset(taskQs,0xff,sizeof(taskQs));
-
-  taskQs[RLY_TASK] = osMessageCreate(osMessageQ(relayQ), NULL);
-  taskQs[SER_S_TASK] = osMessageCreate(osMessageQ(senderQ), NULL);
+  uart2rxLockId = osMutexCreate(osMutex(uart2rxLock));
+  uart2txLockId = osMutexCreate(osMutex(uart2txLock));
 
   relayThreadHandle          = osThreadCreate (osThread(RLY), NULL);
   serialSenderThreadHandle   = osThreadCreate (osThread(SER_S), NULL);

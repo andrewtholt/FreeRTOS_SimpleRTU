@@ -32,8 +32,11 @@ endif
 # All Target
 all: simpleRTU.elf
 
+dependents:
+	-cd /home/andrewh/AC6Workspace/simpleRTUClasses/Debug && $(MAKE) clean all
+
 # Tool invocations
-simpleRTU.elf: $(OBJS) $(USER_OBJS)
+simpleRTU.elf: $(OBJS) $(USER_OBJS) /home/andrewh/AC6Workspace/simpleRTUClasses/Debug/simpleRTUClasses.elf
 	@echo 'Building target: $@'
 	@echo 'Invoking: MCU GCC Linker'
 	arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -specs=nosys.specs -specs=nano.specs -T"../STM32F407VGTx_FLASH.ld" -Wl,-Map=output.map -Wl,--gc-sections -lm -o "simpleRTU.elf" @"objects.list" $(USER_OBJS) $(LIBS)
@@ -54,5 +57,6 @@ post-build:
 
 .PHONY: all clean dependents
 .SECONDARY: post-build
+/home/andrewh/AC6Workspace/simpleRTUClasses/Debug/simpleRTUClasses.elf:
 
 -include ../makefile.targets

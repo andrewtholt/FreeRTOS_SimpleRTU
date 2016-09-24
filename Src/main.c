@@ -71,7 +71,8 @@ void MX_FREERTOS_Init(void);
 //
 #define READ_CMD  0x10
 #define WRITE_CMD 0x20
-#define SUB   0x30
+#define TOGGLE_CMD 0x30 // Only makes sense for digital  Command is WT
+#define SUB   0x80
 
 #define MASK_CMD  0xf0
 
@@ -229,6 +230,7 @@ void relayThread(void const *args) {
 	bool valid=false;
 	bool readData  = false;
 	bool writeData = false;
+	bool toggleData = false;
 	bool subscribeCmd = false;
 
 	volatile QueueHandle_t qh;
@@ -257,13 +259,14 @@ void relayThread(void const *args) {
 
 		memcpy(&data,&evt.value.v,sizeof(uint32_t));
 
-		readData  = (((data.cmd & MASK_CMD) == READ_CMD)  && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
-		writeData = (((data.cmd & MASK_CMD) == WRITE_CMD) && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
+		readData   = (((data.cmd & MASK_CMD) == READ_CMD)  && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
+		writeData  = (((data.cmd & MASK_CMD) == WRITE_CMD) && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
+		toggleData = (((data.cmd & MASK_CMD) == TOGGLE_CMD) && (( data.cmd & MASK_FUNC ) == DIGITAL_CMD))?true:false ;
 
 		subscribeCmd =  (((data.cmd & MASK_CMD) == SUB) && (( data.cmd & MASK_FUNC ) == SUB_CMD))?true:false ;
 		subscribeCmd |= (((data.cmd & MASK_CMD) == SUB) && (( data.cmd & MASK_FUNC ) == UNSUB_CMD))?true:false ;
 
-		valid = (readData || writeData || subscribeCmd )?true:false;
+		valid = (readData || writeData || toggleData || subscribeCmd )?true:false;
 
 		if (valid ) {
 			data.cmd &=0x0f;
@@ -280,6 +283,7 @@ void relayThread(void const *args) {
 					data.data = 0x00;
 				}
 			}
+			// TODO add in toggle data.
 
 			if( subscribeCmd ) {
 				//
@@ -436,12 +440,16 @@ void serialListenerThread(void const *args) {
 		} else if(rxBuffer[1] == 'R') {
 			cmd.cmd = (uint8_t) READ_CMD ;
 			valid = true;
+		} else if(rxBuffer[1] == 'T') {
+			cmd.cmd = (uint8_t) TOGGLE_CMD ;
+			valid = true;
 		}
 
 		if( rxBuffer[2] == 'D') {
 			cmd.cmd |= DIGITAL_CMD;
 			valid = true;
 		} else if ( rxBuffer[2] == 'A') {
+			// TODO if cmd is toggle then it's and invalid command
 			cmd.cmd |= ANALOG_CMD;
 			// TODO Add anolog reading, some day
 			valid = false;
@@ -451,8 +459,8 @@ void serialListenerThread(void const *args) {
 		// ignore it.
 		//
 		// TODO test address 0<= address <=3
-		if(valid ) {
 
+		if(valid ) {
 			cmd.addr = rxBuffer[3];
 			cmd.data = rxBuffer[4] | (rxBuffer[5] << 8);
 

@@ -35,12 +35,15 @@
 #include "cmsis_os.h"
 #include "usart.h"
 #include "gpio.h"
-
+//
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include "ATH_serial.h"
+
+#include "container.h"
+
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
@@ -469,6 +472,7 @@ osThreadDef(SER_S, serialSenderThread, osPriorityNormal,0, STACK_SIZE);
 
 /* USER CODE END 0 */
 
+
 int main(void) {
 
   /* USER CODE BEGIN 1 */
@@ -496,6 +500,14 @@ int main(void) {
   relayThreadHandle          = osThreadCreate (osThread(RLY), NULL);
   serialSenderThreadHandle   = osThreadCreate (osThread(SER_S), NULL);
   serialListenerThreadHandle = osThreadCreate (osThread(SER_L), NULL);
+
+  /*
+   * TODO C++ works !!!!!!!
+  struct container* newClass();
+  volatile void *a;
+  a=newClass();
+  runLoop(a);
+  */
 
   /* USER CODE END 2 */
 

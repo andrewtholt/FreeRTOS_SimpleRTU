@@ -9,4 +9,6 @@ SW4STM32/Debug
 *.elf
 *.swp
 cscope.out
+.cproject
+.project
 
